@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>阿瓦隆進階主持板</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <style>
+        body { font-family: "微軟正黑體", sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; color: #333; margin-bottom: 100px;}
+        button { padding: 10px 15px; margin: 4px; font-size: 14px; cursor: pointer; border: none; border-radius: 5px; font-weight: bold; transition: 0.2s; }
+        .info-panel { background-color: #fff3cd; padding: 15px; border-radius: 8px; border: 1px solid #ffeeba; display: inline-block; margin-bottom: 20px; min-width: 300px; }
+        
+        /* 玩家狀態按鈕 */
+        .btn-cap { background-color: #e2e3e5; color: #666; }
+        .btn-cap.active { background-color: #ffc107; color: #212529; box-shadow: 0 0 10px #ffc107; transform: scale(1.1); }
+        .btn-mission { background-color: #e2e3e5; color: #666; }
+        .btn-mission.active { background-color: #6f42c1; color: white; box-shadow: 0 0 10px #6f42c1; transform: scale(1.1); }
+        .btn-view { background-color: #17a2b8; color: white; }
+        .btn-disabled { background-color: #ced4da !important; color: #6c757d !important; cursor: not-allowed !important; box-shadow: none !important;}
+        
+        .btn-vote { min-width: 90px; }
+        .vote-approve { background-color: #28a745; color: white; box-shadow: 0 0 8px #28a745;}
+        .vote-reject { background-color: #dc3545; color: white; }
+        .btn-delete { background-color: transparent; color: #dc3545; font-size: 20px; padding: 5px; margin-right: 10px; }
+        .btn-delete:hover { background-color: #ffdddd; border-radius: 50%; }
+
+        .primary { background-color: #007bff; color: white; }
+        .success { background-color: #28a745; color: white; }
+        .danger { background-color: #dc3545; color: white; }
+        .secondary { background-color: #6c757d; color: white; }
+
+        /* 彈窗樣式 */
+        .overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); z-index: 1000; align-items: center; justify-content: center; }
+        .modal-box { background: white; padding: 25px; border-radius: 15px; text-align: center; max-width: 90%; width: 500px; overflow-y: auto; max-height: 90vh; }
+        
+        /* 角色選擇按鈕樣式 */
+        .role-btn { width: 140px; border: 2px solid #ddd; background: #fff; margin-bottom: 5px; }
+        .role-btn.selected { border-color: #007bff; background: #e7f1ff; }
+        .role-good { color: #0056b3; }
+        .role-evil { color: #c82333; }
+
+        .player-item { display: flex; align-items: center; justify-content: space-between; padding: 10px; border-bottom: 1px solid #ddd; background: white; margin-bottom: 8px; border-radius: 8px; max-width: 850px; margin-left: auto; margin-right: auto; }
+        .player-name { font-weight: bold; font-size: 18px; flex-grow: 1; text-align: left; padding-left: 10px;}
+        
+        .role-group { border: 1px solid #eee; padding: 10px; margin: 10px 0; border-radius: 10px; }
+        .role-group h3 { margin-top: 0; }
+
+        /* 歷史表格固定排版 */
+        .quest-table-container { margin: 20px auto; max-width: 95%; background: white; padding: 10px; border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow-x: auto;}
+        table { width: 100%; border-collapse: collapse; margin-bottom: 10px; font-size: 14px; min-width: 600px; table-layout: fixed; }
+        th, td { border: 1px solid #dee2e6; padding: 8px 4px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        th { background-color: #343a40; color: white; }
+        th:nth-child(1), td:nth-child(1) { width: 50px; } 
+        th:nth-child(2), td:nth-child(2) { width: 60px; } 
+        
+        .mission-summary-bar { background: #e9ecef; padding: 10px; margin: 10px 0; border-radius: 5px; font-weight: bold; display: flex; align-items: center; justify-content: center; gap: 15px; }
+        .icon-success { color: #28a745; font-size: 24px; }
+        .icon-fail { color: #dc3545; font-size: 24px; }
+    </style>
+</head>
+<body>
+
+    <h1>🏰 阿瓦隆向外累積紀錄板</h1>
+
+    <div class="info-panel">
+        任務 <span id="quest-num">1</span> (第 <span id="attempt-num">1</span> 次派票) | 人數：<span id="player-count">0</span><br>
+        👑 隊長：<span id="display-captain" style="color:#856404; font-weight:bold;">尚未設定</span><br>
+        🛡️ 隊員：<span id="display-team" style="color:#6f42c1; font-weight:bold;">尚未設定</span>
+    </div>
+
+    <div id="add-player-section" style="margin-bottom: 20px;">
+        <input type="text" id="newPlayerName" placeholder="玩家名稱" style="padding:12px; border:1px solid #ccc; border-radius:5px; width:150px;">
+        <button id="addPlayerBtn" onclick="addPlayer()" class="primary">➕ 新增</button>
+        <button id="toggleGameBtn" onclick="openRoleModal()" class="success" style="margin-left: 15px;">🚀 遊戲開始</button>
+    </div>
+
+    <div id="player-list"></div>
+    <div style="margin: 20px auto; max-width: 850px;">
+        <button class="primary" onclick="submitRound()" style="font-size: 20px; padding: 15px; width: 100%;">✅ 紀錄提議投票結果</button>
+    </div>
+
+    <div id="role-modal" class="overlay">
+        <div class="modal-box">
+            <h2>🎭 選擇遊戲角色</h2>
+            <p>需選擇 <span id="needed-count">0</span> 個角色 (當前已選: <span id="selected-count">0</span>)</p>
+            <div id="role-selection-area">
+                <div class="role-group" style="background:#e7f1ff;">
+                    <h3 class="role-good">好人 (<span id="good-needed">0</span>)</h3>
+                    <button class="role-btn role-good selected" id="role-merlin" disabled>梅林 (必選)</button>
+                    <button class="role-btn role-good" onclick="toggleRole('派西維爾')">派西維爾</button>
+                    <div id="servant-area"></div>
+                </div>
+                <div class="role-group" style="background:#f8d7da;">
+                    <h3 class="role-evil">壞人 (<span id="evil-needed">0</span>)</h3>
+                    <button class="role-btn role-evil selected" id="role-assassin" disabled>刺客 (必選)</button>
+                    <button class="role-btn role-evil" onclick="toggleRole('莫甘娜')">莫甘娜</button>
+                    <button class="role-btn role-evil" onclick="toggleRole('莫德雷德')">莫德雷德</button>
+                    <button class="role-btn role-evil" onclick="toggleRole('奧伯倫')">奧伯倫</button>
+                    <div id="minion-area"></div>
+                </div>
+            </div>
+            <button class="success" onclick="confirmRoles()" id="confirm-roles-btn" style="padding: 10px 30px; font-size: 16px;">確認分配</button>
+            <button class="secondary" onclick="closeRoleModal()" style="padding: 10px 30px; font-size: 16px;">取消</button>
+        </div>
+    </div>
+
+    <div id="view-role-modal" class="overlay">
+        <div class="modal-box">
+            <h2 id="view-name">玩家</h2>
+            <h1 id="view-role" style="color: #007bff; font-size: 48px; margin: 20px 0;">角色名</h1>
+            <p id="view-info" style="background: #eee; padding: 15px; border-radius: 8px; font-size: 18px;">資訊內容</p>
+            <button class="primary" onclick="closeViewModal()" style="font-size: 18px; padding: 10px 40px;">我已確認</button>
+        </div>
+    </div>
+
+    <div id="mission-vote-overlay" class="overlay">
+        <div class="modal-box">
+            <h2>🛡️ 任務成員投票 (不記名)</h2>
+            <div id="mission-buttons-container"></div>
+            <hr>
+            <button class="primary" onclick="confirmMissionOutcome()" style="font-size: 18px; padding: 10px 40px;">確認任務結果</button>
+        </div>
+    </div>
+
+    <div id="assassination-modal" class="overlay">
+        <div class="modal-box">
+            <h2>🗡️ 進入刺殺階段</h2>
+            <div id="evil-info" style="margin-bottom: 15px; color: #dc3545; font-weight: bold; background: #f8d7da; padding: 10px; border-radius: 5px;"></div>
+            <p>請選擇你要刺殺的好人 (只能選一個)：</p>
+            <div id="good-targets" style="display: flex; flex-wrap: wrap; justify-content: center; gap: 10px;"></div>
+            <br>
+            <button class="danger" onclick="confirmAssassination()" style="margin-top: 20px; padding: 10px 30px; font-size: 18px;">確認刺殺</button>
+            <button class="secondary" onclick="closeAssassinationModal()" style="margin-top: 20px; padding: 10px 30px; font-size: 18px;">取消</button>
+        </div>
+    </div>
+
+    <div id="history-container"></div>
+
+    <div style="margin: 40px auto; max-width: 600px; display: flex; gap: 20px; justify-content: center;">
+        <button onclick="triggerThreeFails()" class="danger" style="font-size: 18px; padding: 15px 30px; width: 100%;">❌ 三個失敗</button>
+        <button onclick="triggerThreeSuccesses()" class="primary" style="font-size: 18px; padding: 15px 30px; width: 100%;">⭕ 三個成功</button>
+    </div>
+
+    <button onclick="resetHistory()" style="margin: 20px auto; display: block; background:#6c757d; color:white;">🗑️ 刪除歷史紀錄表</button>
+
+    <script>
+        // --- 修復：為 config 補上預設初始結構，避免太快按開始時讀不到屬性而崩潰 ---
+        const socket = io();
+        let currentInfo = { captain: "", team: [], game_started: false, config: [0, 0] };
+        let selectedRoles = ['梅林', '刺客'];
+        let missionVoteStates = [];
+        let currentPlayers = [];
+        let lastPlayersData = []; 
+        let revealedRoles = {}; 
+        let selectedAssassinationTarget = null; 
+
+        document.getElementById("newPlayerName").addEventListener("keypress", (e) => { 
+            if (e.key === "Enter" && !currentInfo.game_started) addPlayer(); 
+        });
+
+        function updateButtonStyles() {
+            const cap = currentInfo.captain;
+            const team = currentInfo.team;
+            
+            document.querySelectorAll('.btn-cap').forEach(btn => {
+                const name = btn.getAttribute('data-name');
+                btn.classList.toggle('active', name === cap);
+            });
+            document.querySelectorAll('.btn-mission').forEach(btn => {
+                const name = btn.getAttribute('data-name');
+                btn.classList.toggle('active', team.includes(name));
+            });
+            
+            document.querySelectorAll('.btn-delete').forEach(btn => {
+                btn.style.display = currentInfo.game_started ? 'none' : 'inline-block';
+            });
+            document.querySelectorAll('.btn-view').forEach(btn => {
+                btn.style.display = currentInfo.game_started ? 'inline-block' : 'none';
+            });
+        }
+
+        function renderPlayerList() {
+            currentPlayers = lastPlayersData.map(p => p.name);
+            const list = document.getElementById('player-list');
+            list.innerHTML = "";
+            lastPlayersData.forEach(p => {
+                const item = document.createElement('div');
+                item.className = "player-item";
+                const isApprove = p.vote === '贊成';
+                
+                let roleHtml = "";
+                if (revealedRoles[p.name]) {
+                    const r = revealedRoles[p.name];
+                    const color = ['刺客', '莫甘娜', '莫德雷德', '奧伯倫', '莫德雷德的爪牙'].includes(r) ? '#dc3545' : '#007bff';
+                    roleHtml = `<span style="font-weight:bold; color: ${color}; margin-left: 10px; font-size: 16px;">[${r}]</span>`;
+                }
+                
+                item.innerHTML = `
+                    <button class="btn-delete" onclick="socket.emit('remove_player', '${p.name}')" title="刪除玩家" style="display: ${currentInfo.game_started ? 'none' : 'inline-block'};">🗑️</button>
+                    ${roleHtml}
+                    <div class="player-name">${p.name}</div>
+                    <div>
+                        <button class="btn-view ${p.viewed ? 'btn-disabled' : ''}" 
+                                onclick="viewRole('${p.name}')" 
+                                ${p.viewed ? 'disabled' : ''} 
+                                style="display: ${currentInfo.game_started ? 'inline-block' : 'none'};">👁️ 查看角色</button>
+                        <button class="btn-cap ${currentInfo.captain === p.name ? 'active' : ''}" 
+                                data-name="${p.name}"
+                                onclick="socket.emit('toggle_captain', '${p.name}')">👑 隊長</button>
+                        <button class="btn-mission ${currentInfo.team.includes(p.name) ? 'active' : ''}" 
+                                data-name="${p.name}"
+                                onclick="socket.emit('toggle_mission_member', '${p.name}')">🛡️ 出任務</button>
+                        <button class="btn-vote ${isApprove ? 'vote-approve' : 'vote-reject'}" 
+                                onclick="socket.emit('toggle_vote', '${p.name}')">${isApprove ? '⭕ 贊成' : '❌ 反對'}</button>
+                    </div>`;
+                list.appendChild(item);
+            });
+            updateButtonStyles();
+        }
+
+        function openRoleModal() {
+            if (currentInfo.game_started) {
+                if(confirm("要切回設定模式嗎？\n這會重置目前角色的分配，並恢復「查看角色」與新增/刪除玩家的功能。")) {
+                    revealedRoles = {}; 
+                    socket.emit('toggle_game_state');
+                }
+                return;
+            }
+            
+            const count = parseInt(document.getElementById('player-count').innerText);
+            if (count < 5) return alert("人數不足 5 人無法開始！");
+            
+            // --- 修復：防禦性檢查，確保後端數據已正確同步 ---
+            if (!currentInfo.config || currentInfo.config[0] === 0) {
+                return alert("遊戲配置數據同步中，請稍候再試或重新整理網頁！");
+            }
+
+            const [good, evil] = currentInfo.config;
+            document.getElementById('needed-count').innerText = count;
+            document.getElementById('good-needed').innerText = good;
+            document.getElementById('evil-needed').innerText = evil;
+            
+            const servantArea = document.getElementById('servant-area');
+            const minionArea = document.getElementById('minion-area');
+            servantArea.innerHTML = ""; minionArea.innerHTML = "";
+            selectedRoles = ['梅林', '刺客']; 
+
+            for(let i=0; i < good-1; i++) {
+                const btn = document.createElement('button');
+                btn.className = "role-btn role-good";
+                btn.innerText = "亞瑟的忠臣";
+                btn.onclick = () => toggleServant(btn);
+                servantArea.appendChild(btn);
+            }
+            for(let i=0; i < evil-1; i++) {
+                const btn = document.createElement('button');
+                btn.className = "role-btn role-evil";
+                btn.innerText = "莫德雷德的爪牙";
+                btn.onclick = () => toggleMinion(btn);
+                minionArea.appendChild(btn);
+            }
+            
+            updateRoleUI();
+            document.getElementById('role-modal').style.display = 'flex';
+        }
+
+        // --- 修復：全新改寫的智慧選取限制系統，會自動幫玩家維持正確總人數 ---
+        function toggleRole(roleName) {
+            const [maxGood, maxEvil] = currentInfo.config;
+            const isGoodRole = ['派西維爾'].includes(roleName);
+            const idx = selectedRoles.indexOf(roleName);
+            
+            if (idx > -1) {
+                selectedRoles.splice(idx, 1);
+            } else {
+                if (isGoodRole) {
+                    const currentGoodCount = 1 + (selectedRoles.includes('派西維爾') ? 1 : 0) + document.querySelectorAll('#servant-area .selected').length;
+                    if (currentGoodCount >= maxGood) {
+                        const activeServant = document.querySelector('#servant-area .selected');
+                        if (activeServant) {
+                            activeServant.classList.remove('selected');
+                        } else {
+                            return alert("好人陣營特殊角色過多，已超過該人數限制！");
+                        }
+                    }
+                    selectedRoles.push(roleName);
+                } else {
+                    const currentEvilCount = 1 + 
+                        (selectedRoles.includes('莫甘娜') ? 1 : 0) + 
+                        (selectedRoles.includes('莫德雷德') ? 1 : 0) + 
+                        (selectedRoles.includes('奧伯倫') ? 1 : 0) + 
+                        document.querySelectorAll('#minion-area .selected').length;
+                        
+                    if (currentEvilCount >= maxEvil) {
+                        const activeMinion = document.querySelector('#minion-area .selected');
+                        if (activeMinion) {
+                            activeMinion.classList.remove('selected');
+                        } else {
+                            return alert("壞人陣營特殊角色過多，已超過該人數限制！");
+                        }
+                    }
+                    selectedRoles.push(roleName);
+                }
+            }
+            updateRoleUI();
+        }
+
+        function toggleServant(btn) {
+            const maxGood = currentInfo.config[0];
+            const isSelected = btn.classList.contains('selected');
+            
+            if (!isSelected) {
+                const currentGoodCount = 1 + (selectedRoles.includes('派西維爾') ? 1 : 0) + document.querySelectorAll('#servant-area .selected').length;
+                if (currentGoodCount >= maxGood) {
+                    return alert("好人人數已達上限，無法再選取亞瑟的忠臣！");
+                }
+                btn.classList.add('selected');
+            } else {
+                btn.classList.remove('selected');
+            }
+            updateRoleUI();
+        }
+
+        function toggleMinion(btn) {
+            const maxEvil = currentInfo.config[1];
+            const isSelected = btn.classList.contains('selected');
+            
+            if (!isSelected) {
+                const currentEvilCount = 1 + 
+                    (selectedRoles.includes('莫甘娜') ? 1 : 0) + 
+                    (selectedRoles.includes('莫德雷德') ? 1 : 0) + 
+                    (selectedRoles.includes('奧伯倫') ? 1 : 0) + 
+                    document.querySelectorAll('#minion-area .selected').length;
+                    
+                if (currentEvilCount >= maxEvil) {
+                    return alert("壞人人數已達上限，無法再選取莫德雷德的爪牙！");
+                }
+                btn.classList.add('selected');
+            } else {
+                btn.classList.remove('selected');
+            }
+            updateRoleUI();
+        }
+
+        function updateRoleUI() {
+            document.querySelectorAll('.role-btn').forEach(btn => {
+                const name = btn.innerText;
+                if (['派西維爾','莫甘娜','莫德雷德','奧伯倫'].includes(name)) {
+                    btn.classList.toggle('selected', selectedRoles.includes(name));
+                }
+            });
+            const servantSelected = document.querySelectorAll('#servant-area .selected').length;
+            const minionSelected = document.querySelectorAll('#minion-area .selected').length;
+            const basicSelected = selectedRoles.length;
+            document.getElementById('selected-count').innerText = basicSelected + servantSelected + minionSelected;
+        }
+
+        function confirmRoles() {
+            const count = parseInt(document.getElementById('player-count').innerText);
+            const servantSelected = Array.from(document.querySelectorAll('#servant-area .selected')).map(() => "亞瑟的忠臣");
+            const minionSelected = Array.from(document.querySelectorAll('#minion-area .selected')).map(() => "莫德雷德的爪牙");
+            const finalRoles = [...selectedRoles, ...servantSelected, ...minionSelected];
+
+            if (finalRoles.length !== count) return alert("選擇的角色總數與人數不符！");
+            
+            socket.emit('start_game_with_roles', finalRoles);
+            closeRoleModal();
+        }
+
+        function closeRoleModal() { document.getElementById('role-modal').style.display = 'none'; }
+
+        function viewRole(name) {
+            socket.emit('view_role', name);
+        }
+
+        socket.on('role_info_result', (data) => {
+            document.getElementById('view-name').innerText = data.name;
+            document.getElementById('view-role').innerText = data.role;
+            document.getElementById('view-info').innerText = data.info;
+            document.getElementById('view-role-modal').style.display = 'flex';
+        });
+
+        function closeViewModal() { document.getElementById('view-role-modal').style.display = 'none'; }
+
+        socket.on('update_game_info', (info) => {
+            currentInfo = info;
+            document.getElementById('quest-num').innerText = info.quest;
+            document.getElementById('attempt-num').innerText = info.attempt;
+            document.getElementById('player-count').innerText = info.player_count;
+            document.getElementById('display-captain').innerText = info.captain;
+            document.getElementById('display-team').innerText = info.team.join(", ") || "尚未設定";
+
+            const toggleBtn = document.getElementById('toggleGameBtn');
+            const input = document.getElementById('newPlayerName');
+            const addBtn = document.getElementById('addPlayerBtn');
+
+            if (info.game_started) {
+                input.disabled = true; 
+                input.style.backgroundColor = '#e9ecef';
+                addBtn.disabled = true; 
+                addBtn.className = 'btn-disabled';
+                
+                toggleBtn.innerText = "🔄 重新設定角色";
+                toggleBtn.style.backgroundColor = "#ffc107";
+                toggleBtn.style.color = "#212529";
+            } else {
+                revealedRoles = {}; 
+                input.disabled = false; 
+                input.style.backgroundColor = 'white';
+                addBtn.disabled = false; 
+                addBtn.className = 'primary';
+                
+                toggleBtn.innerText = "🚀 遊戲開始";
+                toggleBtn.style.backgroundColor = "#28a745";
+                toggleBtn.style.color = "white";
+            }
+            
+            updateButtonStyles();
+        });
+
+        socket.on('update_status', (players) => {
+            lastPlayersData = players;
+            renderPlayerList();
+        });
+
+        function addPlayer() {
+            if (currentInfo.game_started) return;
+            const input = document.getElementById('newPlayerName');
+            const name = input.value.trim();
+            if (!name) return;
+            socket.emit('add_player', name);
+            input.value = "";
+        }
+
+        function submitRound() {
+            if (currentInfo.captain === "尚未設定" || currentInfo.team.length === 0) return alert("請先選定隊長與隊員！");
+            if (confirm("確定要紀錄本次投票結果嗎？\n按下確認後將會清空目前的選取狀態並記錄。")) socket.emit('submit_round');
+        }
+
+        socket.on('trigger_mission_vote', (data) => {
+            const overlay = document.getElementById('mission-vote-overlay');
+            const container = document.getElementById('mission-buttons-container');
+            container.innerHTML = "";
+            missionVoteStates = Array(data.team_count).fill("成功");
+            for (let i = 0; i < data.team_count; i++) {
+                const btn = document.createElement('button');
+                btn.className = "outcome-success";
+                btn.innerText = "成功";
+                btn.style.padding = "20px 30px";
+                btn.style.fontSize = "20px";
+                btn.style.margin = "10px";
+                btn.style.width = "120px";
+                btn.onclick = () => {
+                    missionVoteStates[i] = (missionVoteStates[i] === "成功") ? "失敗" : "成功";
+                    btn.innerText = missionVoteStates[i];
+                    btn.className = (missionVoteStates[i] === "成功" ? "outcome-success" : "danger");
+                };
+                container.appendChild(btn);
+            }
+            overlay.style.display = 'flex';
+        });
+
+        function confirmMissionOutcome() {
+            socket.emit('submit_mission_outcome', missionVoteStates);
+            document.getElementById('mission-vote-overlay').style.display = 'none';
+        }
+
+        function resetHistory() { 
+            if(confirm("確定要刪除所有歷史紀錄嗎？\n(玩家名單將保留，且會切回「未開始」狀態)")) {
+                revealedRoles = {};
+                socket.emit('reset_history'); 
+            }
+        }
+
+        function triggerThreeFails() {
+            if (!currentInfo.game_started) return alert("遊戲尚未開始！");
+            if(confirm("確定宣告「三個失敗」嗎？\n壞人獲勝，系統將會攤牌顯示所有人身分。")) {
+                socket.emit('three_fails');
+            }
+        }
+
+        function triggerThreeSuccesses() {
+            if (!currentInfo.game_started) return alert("遊戲尚未開始！");
+            if(confirm("確定宣告「三個成功」嗎？\n系統將進入刺殺階段。")) {
+                socket.emit('three_successes');
+            }
+        }
+
+        socket.on('reveal_all_roles', (roles) => {
+            revealedRoles = roles;
+            renderPlayerList();
+        });
+
+        socket.on('trigger_assassination', (data) => {
+            const overlay = document.getElementById('assassination-modal');
+            const evilInfoDiv = document.getElementById('evil-info');
+            const targetsDiv = document.getElementById('good-targets');
+            
+            let evilText = "壞人陣營身分：<br>";
+            for (const [name, role] of Object.entries(data.evil_info)) {
+                evilText += `${name} (${role})&nbsp;&nbsp;`;
+            }
+            evilInfoDiv.innerHTML = evilText;
+
+            targetsDiv.innerHTML = "";
+            selectedAssassinationTarget = null;
+
+            data.good_players.forEach(name => {
+                const btn = document.createElement('button');
+                btn.className = "role-btn role-good";
+                btn.innerText = name;
+                btn.style.padding = "10px";
+                btn.onclick = () => {
+                    document.querySelectorAll('#good-targets .role-btn').forEach(b => b.classList.remove('selected'));
+                    btn.classList.add('selected');
+                    selectedAssassinationTarget = name;
+                };
+                targetsDiv.appendChild(btn);
+            });
+
+            overlay.style.display = 'flex';
+        });
+
+        function confirmAssassination() {
+            if (!selectedAssassinationTarget) return alert("請先選擇一位好人作為刺殺目標！");
+            if (confirm(`確定要刺殺 ${selectedAssassinationTarget} 嗎？`)) {
+                socket.emit('submit_assassination', selectedAssassinationTarget);
+                closeAssassinationModal();
+            }
+        }
+
+        function closeAssassinationModal() {
+            document.getElementById('assassination-modal').style.display = 'none';
+        }
+
+        socket.on('assassination_result', (data) => {
+            alert((data.is_evil_win ? "💀 " : "🎉 ") + data.message);
+        });
+
+        socket.on('update_history', (data) => {
+            const container = document.getElementById('history-container');
+            container.innerHTML = ""; 
+            const records = data.history;
+            const outcomes = data.outcomes;
+            if (records.length === 0) return;
+
+            let allNames = [];
+            currentPlayers.forEach(n => { if (!allNames.includes(n)) allNames.push(n); });
+            records.forEach(r => { Object.keys(r.votes).forEach(n => { if (!allNames.includes(n)) allNames.push(n); }); });
+
+            const quests = [...new Set(records.map(r => r.quest))].sort((a, b) => a - b);
+            
+            quests.forEach(qNum => {
+                const qDiv = document.createElement('div');
+                qDiv.className = "quest-table-container";
+                qDiv.innerHTML = `<h4>第 ${qNum} 局任務</h4>`;
+                const table = document.createElement('table');
+                
+                table.innerHTML = `<tr><th>次數</th><th>提議</th>` + allNames.map(n => `<th>${n}</th>`).join("") + `</tr>`;
+
+                records.filter(r => r.quest === qNum).forEach(r => {
+                    const row = document.createElement('tr');
+                    let cols = `<td>A${r.attempt}</td><td style="color:${r.is_approved?'#28a745':'#dc3545'}; font-weight:bold;">${r.is_approved?'通過':'失敗'}</td>`;
+                    allNames.forEach(n => {
+                        const v = r.votes[n];
+                        if (v === undefined) {
+                            cols += `<td style="background:#eee; color:#ccc;">-</td>`;
+                        } else {
+                            const icon = (n === r.captain ? "👑" : "") + (r.team.includes(n) ? "🛡️" : "");
+                            cols += `<td style="background:${v==='贊成'?'#fff':'#adb5bd'}; font-size:16px;">${icon}</td>`;
+                        }
+                    });
+                    row.innerHTML = cols;
+                    table.appendChild(row);
+                });
+                qDiv.appendChild(table);
+
+                if (outcomes[qNum]) {
+                    const resBar = document.createElement('div');
+                    resBar.className = "mission-summary-bar";
+                    resBar.innerHTML = `<span>任務結果：</span>`;
+                    outcomes[qNum].forEach(res => {
+                        const icon = document.createElement('span');
+                        icon.innerHTML = (res === "成功") ? "⭕" : "❌";
+                        icon.className = (res === "成功") ? "icon-success" : "icon-fail";
+                        resBar.appendChild(icon);
+                    });
+                    qDiv.appendChild(resBar);
+                }
+                container.appendChild(qDiv);
+            });
+        });
+    </script>
+</body>
+</html>
