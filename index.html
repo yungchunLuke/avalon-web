@@ -39,7 +39,15 @@
         .role-good { color: #0056b3; }
         .role-evil { color: #c82333; }
 
-        .player-item { display: flex; align-items: center; justify-content: space-between; padding: 10px; border-bottom: 1px solid #ddd; background: white; margin-bottom: 8px; border-radius: 8px; max-width: 850px; margin-left: auto; margin-right: auto; }
+        .player-item { 
+            display: flex; align-items: center; justify-content: space-between; 
+            padding: 10px; border-bottom: 1px solid #ddd; background: white; 
+            margin-bottom: 8px; border-radius: 8px; max-width: 850px; 
+            margin-left: auto; margin-right: auto; 
+            cursor: grab;
+            transition: box-shadow 0.2s;
+        }
+        .player-item:active { cursor: grabbing; }
         .player-name { font-weight: bold; font-size: 18px; flex-grow: 1; text-align: left; padding-left: 10px;}
         
         .role-group { border: 1px solid #eee; padding: 10px; margin: 10px 0; border-radius: 10px; }
@@ -113,12 +121,23 @@
         </div>
     </div>
 
-    <div id="mission-vote-overlay" class="overlay">
+    <div id="personal-mission-modal" class="overlay">
         <div class="modal-box">
-            <h2>🛡️ 任務成員投票 (不記名)</h2>
-            <div id="mission-buttons-container"></div>
-            <hr>
-            <button class="primary" onclick="confirmMissionOutcome()" style="font-size: 18px; padding: 10px 40px;">確認任務結果</button>
+            <h2 id="pm-name" style="font-size: 28px; color: #007bff;">玩家名</h2>
+            <h3 style="margin-bottom: 20px;">請選擇出任務結果</h3>
+            <div style="display:flex; justify-content:center; gap:20px; margin: 20px 0;">
+                <button id="pm-success-btn" style="background:#28a745; color:white; padding: 20px 40px; font-size: 24px; border:2px solid transparent; border-radius:10px;" onclick="selectPersonalVote('成功')">成功</button>
+                <button id="pm-fail-btn" style="background:#dc3545; color:white; padding: 20px 40px; font-size: 24px; border:2px solid transparent; border-radius:10px;" onclick="selectPersonalVote('失敗')">失敗</button>
+            </div>
+            <div id="pm-selection-text" style="font-size: 22px; font-weight: bold; margin-bottom: 20px; color: #666;">尚未選擇</div>
+            <button class="primary" onclick="submitPersonalVote()" style="font-size: 20px; padding: 15px 50px;">確認送出</button>
+        </div>
+    </div>
+
+    <div id="mission-result-modal" class="overlay" style="z-index: 2000;">
+        <div class="modal-box" id="mission-result-box" style="background: rgba(255,255,255,0.95); transition: 0.3s;">
+            <h1 id="mission-result-title" style="font-size: 50px; margin-bottom: 10px;"></h1>
+            <p id="mission-result-desc" style="font-size: 24px; font-weight: bold;"></p>
         </div>
     </div>
 
@@ -144,21 +163,60 @@
     <button onclick="resetHistory()" style="margin: 20px auto; display: block; background:#6c757d; color:white;">🗑️ 刪除歷史紀錄表</button>
 
     <script>
-        // --- 修復：為 config 補上預設初始結構，避免太快按開始時讀不到屬性而崩潰 ---
         const socket = io();
-        let currentInfo = { captain: "", team: [], game_started: false, config: [0, 0] };
+        let currentInfo = { captain: "", team: [], game_started: false, config: [0, 0], mission_voting_active: false, mission_team: [], voted_members: [], opened_missions: [] };
         let selectedRoles = ['梅林', '刺客'];
-        let missionVoteStates = [];
         let currentPlayers = [];
         let lastPlayersData = []; 
         let revealedRoles = {}; 
         let selectedAssassinationTarget = null; 
+
+        // 任務階段專用變數
+        let currentMissionPlayer = "";
+        let currentMissionSelection = "";
+        let currentMissionPlayerIsGood = false;
+
+        // ====== 拖曳排序功能 ======
+        let draggedName = null;
+
+        function dragStart(e) {
+            draggedName = e.currentTarget.getAttribute('data-name');
+            e.currentTarget.style.opacity = '0.4';
+        }
+        function dragOver(e) {
+            e.preventDefault(); 
+            let targetItem = e.target.closest('.player-item');
+            if (targetItem && targetItem.getAttribute('data-name') !== draggedName) {
+                targetItem.style.boxShadow = "0 -4px 0 #007bff"; 
+            }
+        }
+        function dragLeave(e) {
+            let targetItem = e.target.closest('.player-item');
+            if (targetItem) targetItem.style.boxShadow = "";
+        }
+        function drop(e) {
+            e.preventDefault();
+            let targetItem = e.target.closest('.player-item');
+            if (targetItem) {
+                targetItem.style.boxShadow = "";
+                const targetName = targetItem.getAttribute('data-name');
+                if (draggedName && targetName && draggedName !== targetName) {
+                    socket.emit('reorder_players', { dragged: draggedName, target: targetName });
+                }
+            }
+        }
+        function dragEnd(e) {
+            e.currentTarget.style.opacity = '1';
+            document.querySelectorAll('.player-item').forEach(item => item.style.boxShadow = "");
+        }
 
         document.getElementById("newPlayerName").addEventListener("keypress", (e) => { 
             if (e.key === "Enter" && !currentInfo.game_started) addPlayer(); 
         });
 
         function updateButtonStyles() {
+            if (currentInfo.mission_voting_active) return;
+            
             const cap = currentInfo.captain;
             const team = currentInfo.team;
             
@@ -195,11 +253,33 @@
                     roleHtml = `<span style="font-weight:bold; color: ${color}; margin-left: 10px; font-size: 16px;">[${r}]</span>`;
                 }
                 
-                item.innerHTML = `
-                    <button class="btn-delete" onclick="socket.emit('remove_player', '${p.name}')" title="刪除玩家" style="display: ${currentInfo.game_started ? 'none' : 'inline-block'};">🗑️</button>
-                    ${roleHtml}
-                    <div class="player-name">${p.name}</div>
-                    <div>
+                let controlsHtml = "";
+
+                if (currentInfo.mission_voting_active) {
+                    let btnMissionHtml = "";
+                    if (currentInfo.mission_team.includes(p.name)) {
+                        if (currentInfo.voted_members && currentInfo.voted_members.includes(p.name)) {
+                            btnMissionHtml = `<button class="btn-disabled" disabled style="padding:10px 20px; font-size:16px;">✅ 已完成</button>`;
+                        } else if (currentInfo.opened_missions && currentInfo.opened_missions.includes(p.name)) {
+                            btnMissionHtml = `<button class="btn-disabled" disabled style="padding:10px 20px; font-size:16px; background-color: #17a2b8; color: white;">👀 投票中...</button>`;
+                        } else {
+                            btnMissionHtml = `<button style="background-color: #fd7e14; color: white; padding:10px 20px; font-size:16px;" onclick="socket.emit('request_mission_modal', '${p.name}')">🚀 按此出任務</button>`;
+                        }
+                    } else {
+                        btnMissionHtml = `<button class="btn-mission btn-disabled" disabled>🛡️ 出任務 (凍結)</button>`;
+                    }
+                    
+                    controlsHtml = `
+                        <button class="btn-view ${p.viewed ? 'btn-disabled' : ''}" 
+                                onclick="viewRole('${p.name}')" 
+                                ${p.viewed ? 'disabled' : ''} 
+                                style="display: ${currentInfo.game_started ? 'inline-block' : 'none'};">👁️ 查看角色</button>
+                        <button class="btn-cap btn-disabled" disabled>👑 隊長</button>
+                        ${btnMissionHtml}
+                        <button class="btn-vote btn-disabled" disabled>${isApprove ? '⭕ 贊成' : '❌ 反對'}</button>
+                    `;
+                } else {
+                    controlsHtml = `
                         <button class="btn-view ${p.viewed ? 'btn-disabled' : ''}" 
                                 onclick="viewRole('${p.name}')" 
                                 ${p.viewed ? 'disabled' : ''} 
@@ -212,7 +292,24 @@
                                 onclick="socket.emit('toggle_mission_member', '${p.name}')">🛡️ 出任務</button>
                         <button class="btn-vote ${isApprove ? 'vote-approve' : 'vote-reject'}" 
                                 onclick="socket.emit('toggle_vote', '${p.name}')">${isApprove ? '⭕ 贊成' : '❌ 反對'}</button>
-                    </div>`;
+                    `;
+                }
+                
+                item.innerHTML = `
+                    <button class="btn-delete" onclick="socket.emit('remove_player', '${p.name}')" title="刪除玩家" style="display: ${currentInfo.game_started ? 'none' : 'inline-block'};">🗑️</button>
+                    ${roleHtml}
+                    <div class="player-name">${p.name}</div>
+                    <div>${controlsHtml}</div>`;
+                
+                // 綁定拖曳事件
+                item.setAttribute('draggable', 'true');
+                item.setAttribute('data-name', p.name);
+                item.addEventListener('dragstart', dragStart);
+                item.addEventListener('dragover', dragOver);
+                item.addEventListener('dragleave', dragLeave);
+                item.addEventListener('drop', drop);
+                item.addEventListener('dragend', dragEnd);
+
                 list.appendChild(item);
             });
             updateButtonStyles();
@@ -226,14 +323,9 @@
                 }
                 return;
             }
-            
             const count = parseInt(document.getElementById('player-count').innerText);
             if (count < 5) return alert("人數不足 5 人無法開始！");
-            
-            // --- 修復：防禦性檢查，確保後端數據已正確同步 ---
-            if (!currentInfo.config || currentInfo.config[0] === 0) {
-                return alert("遊戲配置數據同步中，請稍候再試或重新整理網頁！");
-            }
+            if (!currentInfo.config || currentInfo.config[0] === 0) return alert("遊戲配置數據同步中，請稍候再試或重新整理網頁！");
 
             const [good, evil] = currentInfo.config;
             document.getElementById('needed-count').innerText = count;
@@ -259,12 +351,10 @@
                 btn.onclick = () => toggleMinion(btn);
                 minionArea.appendChild(btn);
             }
-            
             updateRoleUI();
             document.getElementById('role-modal').style.display = 'flex';
         }
 
-        // --- 修復：全新改寫的智慧選取限制系統，會自動幫玩家維持正確總人數 ---
         function toggleRole(roleName) {
             const [maxGood, maxEvil] = currentInfo.config;
             const isGoodRole = ['派西維爾'].includes(roleName);
@@ -277,27 +367,16 @@
                     const currentGoodCount = 1 + (selectedRoles.includes('派西維爾') ? 1 : 0) + document.querySelectorAll('#servant-area .selected').length;
                     if (currentGoodCount >= maxGood) {
                         const activeServant = document.querySelector('#servant-area .selected');
-                        if (activeServant) {
-                            activeServant.classList.remove('selected');
-                        } else {
-                            return alert("好人陣營特殊角色過多，已超過該人數限制！");
-                        }
+                        if (activeServant) activeServant.classList.remove('selected');
+                        else return alert("好人陣營特殊角色過多，已超過該人數限制！");
                     }
                     selectedRoles.push(roleName);
                 } else {
-                    const currentEvilCount = 1 + 
-                        (selectedRoles.includes('莫甘娜') ? 1 : 0) + 
-                        (selectedRoles.includes('莫德雷德') ? 1 : 0) + 
-                        (selectedRoles.includes('奧伯倫') ? 1 : 0) + 
-                        document.querySelectorAll('#minion-area .selected').length;
-                        
+                    const currentEvilCount = 1 + (selectedRoles.includes('莫甘娜') ? 1 : 0) + (selectedRoles.includes('莫德雷德') ? 1 : 0) + (selectedRoles.includes('奧伯倫') ? 1 : 0) + document.querySelectorAll('#minion-area .selected').length;
                     if (currentEvilCount >= maxEvil) {
                         const activeMinion = document.querySelector('#minion-area .selected');
-                        if (activeMinion) {
-                            activeMinion.classList.remove('selected');
-                        } else {
-                            return alert("壞人陣營特殊角色過多，已超過該人數限制！");
-                        }
+                        if (activeMinion) activeMinion.classList.remove('selected');
+                        else return alert("壞人陣營特殊角色過多，已超過該人數限制！");
                     }
                     selectedRoles.push(roleName);
                 }
@@ -307,13 +386,9 @@
 
         function toggleServant(btn) {
             const maxGood = currentInfo.config[0];
-            const isSelected = btn.classList.contains('selected');
-            
-            if (!isSelected) {
+            if (!btn.classList.contains('selected')) {
                 const currentGoodCount = 1 + (selectedRoles.includes('派西維爾') ? 1 : 0) + document.querySelectorAll('#servant-area .selected').length;
-                if (currentGoodCount >= maxGood) {
-                    return alert("好人人數已達上限，無法再選取亞瑟的忠臣！");
-                }
+                if (currentGoodCount >= maxGood) return alert("好人人數已達上限，無法再選取亞瑟的忠臣！");
                 btn.classList.add('selected');
             } else {
                 btn.classList.remove('selected');
@@ -323,18 +398,9 @@
 
         function toggleMinion(btn) {
             const maxEvil = currentInfo.config[1];
-            const isSelected = btn.classList.contains('selected');
-            
-            if (!isSelected) {
-                const currentEvilCount = 1 + 
-                    (selectedRoles.includes('莫甘娜') ? 1 : 0) + 
-                    (selectedRoles.includes('莫德雷德') ? 1 : 0) + 
-                    (selectedRoles.includes('奧伯倫') ? 1 : 0) + 
-                    document.querySelectorAll('#minion-area .selected').length;
-                    
-                if (currentEvilCount >= maxEvil) {
-                    return alert("壞人人數已達上限，無法再選取莫德雷德的爪牙！");
-                }
+            if (!btn.classList.contains('selected')) {
+                const currentEvilCount = 1 + (selectedRoles.includes('莫甘娜') ? 1 : 0) + (selectedRoles.includes('莫德雷德') ? 1 : 0) + (selectedRoles.includes('奧伯倫') ? 1 : 0) + document.querySelectorAll('#minion-area .selected').length;
+                if (currentEvilCount >= maxEvil) return alert("壞人人數已達上限，無法再選取莫德雷德的爪牙！");
                 btn.classList.add('selected');
             } else {
                 btn.classList.remove('selected');
@@ -351,8 +417,7 @@
             });
             const servantSelected = document.querySelectorAll('#servant-area .selected').length;
             const minionSelected = document.querySelectorAll('#minion-area .selected').length;
-            const basicSelected = selectedRoles.length;
-            document.getElementById('selected-count').innerText = basicSelected + servantSelected + minionSelected;
+            document.getElementById('selected-count').innerText = selectedRoles.length + servantSelected + minionSelected;
         }
 
         function confirmRoles() {
@@ -360,18 +425,14 @@
             const servantSelected = Array.from(document.querySelectorAll('#servant-area .selected')).map(() => "亞瑟的忠臣");
             const minionSelected = Array.from(document.querySelectorAll('#minion-area .selected')).map(() => "莫德雷德的爪牙");
             const finalRoles = [...selectedRoles, ...servantSelected, ...minionSelected];
-
             if (finalRoles.length !== count) return alert("選擇的角色總數與人數不符！");
             
             socket.emit('start_game_with_roles', finalRoles);
             closeRoleModal();
         }
-
         function closeRoleModal() { document.getElementById('role-modal').style.display = 'none'; }
 
-        function viewRole(name) {
-            socket.emit('view_role', name);
-        }
+        function viewRole(name) { socket.emit('view_role', name); }
 
         socket.on('role_info_result', (data) => {
             document.getElementById('view-name').innerText = data.name;
@@ -379,7 +440,6 @@
             document.getElementById('view-info').innerText = data.info;
             document.getElementById('view-role-modal').style.display = 'flex';
         });
-
         function closeViewModal() { document.getElementById('view-role-modal').style.display = 'none'; }
 
         socket.on('update_game_info', (info) => {
@@ -395,27 +455,16 @@
             const addBtn = document.getElementById('addPlayerBtn');
 
             if (info.game_started) {
-                input.disabled = true; 
-                input.style.backgroundColor = '#e9ecef';
-                addBtn.disabled = true; 
-                addBtn.className = 'btn-disabled';
-                
-                toggleBtn.innerText = "🔄 重新設定角色";
-                toggleBtn.style.backgroundColor = "#ffc107";
-                toggleBtn.style.color = "#212529";
+                input.disabled = true; input.style.backgroundColor = '#e9ecef';
+                addBtn.disabled = true; addBtn.className = 'btn-disabled';
+                toggleBtn.innerText = "🔄 重新設定角色"; toggleBtn.style.backgroundColor = "#ffc107"; toggleBtn.style.color = "#212529";
             } else {
                 revealedRoles = {}; 
-                input.disabled = false; 
-                input.style.backgroundColor = 'white';
-                addBtn.disabled = false; 
-                addBtn.className = 'primary';
-                
-                toggleBtn.innerText = "🚀 遊戲開始";
-                toggleBtn.style.backgroundColor = "#28a745";
-                toggleBtn.style.color = "white";
+                input.disabled = false; input.style.backgroundColor = 'white';
+                addBtn.disabled = false; addBtn.className = 'primary';
+                toggleBtn.innerText = "🚀 遊戲開始"; toggleBtn.style.backgroundColor = "#28a745"; toggleBtn.style.color = "white";
             }
-            
-            updateButtonStyles();
+            renderPlayerList();
         });
 
         socket.on('update_status', (players) => {
@@ -433,57 +482,99 @@
         }
 
         function submitRound() {
+            if (currentInfo.mission_voting_active) return alert("任務執行中，無法進行此操作！");
             if (currentInfo.captain === "尚未設定" || currentInfo.team.length === 0) return alert("請先選定隊長與隊員！");
-            if (confirm("確定要紀錄本次投票結果嗎？\n按下確認後將會清空目前的選取狀態並記錄。")) socket.emit('submit_round');
+            if (confirm("確定要紀錄本次投票結果嗎？\n按下確認後將會鎖定版面進行出任務。")) socket.emit('submit_round');
         }
 
-        socket.on('trigger_mission_vote', (data) => {
-            const overlay = document.getElementById('mission-vote-overlay');
-            const container = document.getElementById('mission-buttons-container');
-            container.innerHTML = "";
-            missionVoteStates = Array(data.team_count).fill("成功");
-            for (let i = 0; i < data.team_count; i++) {
-                const btn = document.createElement('button');
-                btn.className = "outcome-success";
-                btn.innerText = "成功";
-                btn.style.padding = "20px 30px";
-                btn.style.fontSize = "20px";
-                btn.style.margin = "10px";
-                btn.style.width = "120px";
-                btn.onclick = () => {
-                    missionVoteStates[i] = (missionVoteStates[i] === "成功") ? "失敗" : "成功";
-                    btn.innerText = missionVoteStates[i];
-                    btn.className = (missionVoteStates[i] === "成功" ? "outcome-success" : "danger");
-                };
-                container.appendChild(btn);
-            }
-            overlay.style.display = 'flex';
+        socket.on('open_mission_modal', (data) => {
+            currentMissionPlayer = data.name;
+            currentMissionPlayerIsGood = data.is_good;
+            currentMissionSelection = "";
+            
+            document.getElementById('pm-name').innerText = currentMissionPlayer;
+            document.getElementById('pm-selection-text').innerText = "尚未選擇";
+            document.getElementById('pm-selection-text').style.color = "#666";
+            
+            document.getElementById('pm-success-btn').style.border = "2px solid transparent";
+            document.getElementById('pm-success-btn').style.transform = "scale(1)";
+            document.getElementById('pm-fail-btn').style.border = "2px solid transparent";
+            document.getElementById('pm-fail-btn').style.transform = "scale(1)";
+            
+            document.getElementById('personal-mission-modal').style.display = 'flex';
         });
 
-        function confirmMissionOutcome() {
-            socket.emit('submit_mission_outcome', missionVoteStates);
-            document.getElementById('mission-vote-overlay').style.display = 'none';
+        function selectPersonalVote(vote) {
+            if (vote === '失敗' && currentMissionPlayerIsGood) return;
+            
+            currentMissionSelection = vote;
+            const succBtn = document.getElementById('pm-success-btn');
+            const failBtn = document.getElementById('pm-fail-btn');
+            
+            if (vote === '成功') {
+                succBtn.style.border = "4px solid #000"; succBtn.style.transform = "scale(1.1)";
+                failBtn.style.border = "2px solid transparent"; failBtn.style.transform = "scale(1)";
+                document.getElementById('pm-selection-text').innerText = "已選擇：成功";
+                document.getElementById('pm-selection-text').style.color = "#28a745";
+            } else {
+                failBtn.style.border = "4px solid #000"; failBtn.style.transform = "scale(1.1)";
+                succBtn.style.border = "2px solid transparent"; succBtn.style.transform = "scale(1)";
+                document.getElementById('pm-selection-text').innerText = "已選擇：失敗";
+                document.getElementById('pm-selection-text').style.color = "#dc3545";
+            }
         }
+
+        function submitPersonalVote() {
+            if (!currentMissionSelection) return alert("請先選擇成功或失敗！");
+            
+            socket.emit('submit_individual_mission_vote', {
+                name: currentMissionPlayer,
+                vote: currentMissionSelection
+            });
+            document.getElementById('personal-mission-modal').style.display = 'none';
+        }
+
+        let missionResultTimeout;
+        socket.on('mission_result_animation', (data) => {
+            const modal = document.getElementById('mission-result-modal');
+            const title = document.getElementById('mission-result-title');
+            const desc = document.getElementById('mission-result-desc');
+            const box = document.getElementById('mission-result-box');
+            
+            if (data.fails === 0) {
+                title.innerText = "🎉 任務成功！ 🎉";
+                title.style.color = "#28a745";
+                box.style.boxShadow = "0 0 50px rgba(40,167,69,0.9)";
+            } else {
+                title.innerText = "💥 任務失敗！ 💥";
+                title.style.color = "#dc3545";
+                box.style.boxShadow = "0 0 50px rgba(220,53,69,0.9)";
+            }
+            desc.innerText = data.message;
+            modal.style.display = 'flex';
+
+            clearTimeout(missionResultTimeout);
+            missionResultTimeout = setTimeout(() => {
+                modal.style.display = 'none';
+            }, 1000);
+        });
 
         function resetHistory() { 
             if(confirm("確定要刪除所有歷史紀錄嗎？\n(玩家名單將保留，且會切回「未開始」狀態)")) {
                 revealedRoles = {};
+                document.getElementById('history-container').innerHTML = ""; 
                 socket.emit('reset_history'); 
             }
         }
 
         function triggerThreeFails() {
             if (!currentInfo.game_started) return alert("遊戲尚未開始！");
-            if(confirm("確定宣告「三個失敗」嗎？\n壞人獲勝，系統將會攤牌顯示所有人身分。")) {
-                socket.emit('three_fails');
-            }
+            if(confirm("確定宣告「三個失敗」嗎？\n壞人獲勝，系統將會攤牌顯示所有人身分。")) socket.emit('three_fails');
         }
 
         function triggerThreeSuccesses() {
             if (!currentInfo.game_started) return alert("遊戲尚未開始！");
-            if(confirm("確定宣告「三個成功」嗎？\n系統將進入刺殺階段。")) {
-                socket.emit('three_successes');
-            }
+            if(confirm("確定宣告「三個成功」嗎？\n系統將進入刺殺階段。")) socket.emit('three_successes');
         }
 
         socket.on('reveal_all_roles', (roles) => {
@@ -497,9 +588,7 @@
             const targetsDiv = document.getElementById('good-targets');
             
             let evilText = "壞人陣營身分：<br>";
-            for (const [name, role] of Object.entries(data.evil_info)) {
-                evilText += `${name} (${role})&nbsp;&nbsp;`;
-            }
+            for (const [name, role] of Object.entries(data.evil_info)) evilText += `${name} (${role})&nbsp;&nbsp;`;
             evilInfoDiv.innerHTML = evilText;
 
             targetsDiv.innerHTML = "";
@@ -517,7 +606,6 @@
                 };
                 targetsDiv.appendChild(btn);
             });
-
             overlay.style.display = 'flex';
         });
 
@@ -528,14 +616,8 @@
                 closeAssassinationModal();
             }
         }
-
-        function closeAssassinationModal() {
-            document.getElementById('assassination-modal').style.display = 'none';
-        }
-
-        socket.on('assassination_result', (data) => {
-            alert((data.is_evil_win ? "💀 " : "🎉 ") + data.message);
-        });
+        function closeAssassinationModal() { document.getElementById('assassination-modal').style.display = 'none'; }
+        socket.on('assassination_result', (data) => { alert((data.is_evil_win ? "💀 " : "🎉 ") + data.message); });
 
         socket.on('update_history', (data) => {
             const container = document.getElementById('history-container');
