@@ -16,6 +16,13 @@ history_records = []
 mission_outcomes = {}
 game_started = False
 
+# 任務投票階段的專用變數
+mission_voting_active = False
+mission_team = []
+voted_members = []
+mission_votes = []
+opened_missions = [] # 記錄已經點開任務卡的玩家
+
 # 阿瓦隆配置表 (總人數: (好人總數, 壞人總數))
 GAME_CONFIG = {
     5: (3, 2), 6: (4, 2), 7: (4, 3), 8: (5, 3), 9: (6, 3), 10: (6, 4)
@@ -32,7 +39,11 @@ def get_game_info():
         'captain': current_captain,
         'team': current_team_list,
         'game_started': game_started,
-        'config': GAME_CONFIG.get(len(players), (0,0))
+        'config': GAME_CONFIG.get(len(players), (0,0)),
+        'mission_voting_active': mission_voting_active,
+        'mission_team': mission_team,
+        'voted_members': voted_members,
+        'opened_missions': opened_missions
     }
 
 @app.route('/')
@@ -59,6 +70,7 @@ def handle_remove_player(name):
         del players[name]
         if current_captain == name: current_captain = "尚未設定"
         if name in current_team_list: current_team_list.remove(name)
+        # 清除歷史中該玩家的投票紀錄避免前端報錯
         for record in history_records:
             if name in record.get('votes', {}): del record['votes'][name]
         emit('update_status', get_status(), broadcast=True)
@@ -67,8 +79,9 @@ def handle_remove_player(name):
 
 @socketio.on('toggle_game_state')
 def handle_toggle_game_state():
-    global game_started
+    global game_started, mission_voting_active
     game_started = False
+    mission_voting_active = False
     for n in players:
         players[n]['role'] = None
         players[n]['viewed'] = False
@@ -118,26 +131,29 @@ def handle_view_role(name):
 
 @socketio.on('toggle_vote')
 def handle_toggle_vote(name):
-    if name in players:
+    if not mission_voting_active and name in players:
         players[name]['vote'] = '贊成' if players[name]['vote'] == '反對' else '反對'
         emit('update_status', get_status(), broadcast=True)
 
 @socketio.on('toggle_captain')
 def handle_toggle_captain(name):
     global current_captain
-    current_captain = name
-    emit('update_game_info', get_game_info(), broadcast=True)
+    if not mission_voting_active:
+        current_captain = name
+        emit('update_game_info', get_game_info(), broadcast=True)
 
 @socketio.on('toggle_mission_member')
 def handle_toggle_mission(name):
     global current_team_list
-    if name in current_team_list: current_team_list.remove(name)
-    else: current_team_list.append(name)
-    emit('update_game_info', get_game_info(), broadcast=True)
+    if not mission_voting_active:
+        if name in current_team_list: current_team_list.remove(name)
+        else: current_team_list.append(name)
+        emit('update_game_info', get_game_info(), broadcast=True)
 
 @socketio.on('submit_round')
 def handle_submit_round():
     global current_attempt, current_captain, current_team_list
+    global mission_voting_active, mission_team, voted_members, mission_votes, opened_missions
     if not players: return
 
     approve_count = sum(1 for d in players.values() if d['vote'] == '贊成')
@@ -150,37 +166,102 @@ def handle_submit_round():
         'is_approved': is_approved
     }
     history_records.append(record)
-    team_count_for_mission = len(current_team_list)
-    
-    current_captain = "尚未設定"
-    current_team_list = []
-    for n in players: players[n]['vote'] = '反對'
     
     if is_approved:
-        emit('trigger_mission_vote', {'team_count': team_count_for_mission}, broadcast=True)
+        # 提案通過，進入出任務鎖定階段
+        mission_voting_active = True
+        mission_team = list(current_team_list)
+        voted_members = []
+        mission_votes = []
+        opened_missions = []
     else:
+        # 提案失敗，重置隊長與隊員，推進次數
         current_attempt += 1
+        current_captain = "尚未設定"
+        current_team_list = []
+    
+    for n in players: players[n]['vote'] = '反對'
     
     emit('update_status', get_status(), broadcast=True)
     emit('update_game_info', get_game_info(), broadcast=True)
     emit('update_history', {'history': history_records, 'outcomes': mission_outcomes}, broadcast=True)
 
-@socketio.on('submit_mission_outcome')
-def handle_mission_outcome(results):
-    global current_quest, current_attempt
-    mission_outcomes[current_quest] = results
-    current_quest += 1
-    current_attempt = 1
-    emit('update_status', get_status(), broadcast=True)
+@socketio.on('request_mission_modal')
+def handle_request_mission_modal(name):
+    # 防堵重複點擊與多設備同時點擊
+    if not mission_voting_active or name not in mission_team or name in voted_members or name in opened_missions: 
+        return
+    
+    # 紀錄已被點開
+    opened_missions.append(name)
+    
+    # 廣播更新，將該玩家按鈕鎖定為「👀 投票中...」
     emit('update_game_info', get_game_info(), broadcast=True)
-    emit('update_history', {'history': history_records, 'outcomes': mission_outcomes}, broadcast=True)
+    emit('update_status', get_status(), broadcast=True)
+    
+    role = players[name].get('role', '')
+    is_good = role in ['梅林', '派西維爾', '亞瑟的忠臣']
+    emit('open_mission_modal', {'name': name, 'is_good': is_good})
+
+@socketio.on('submit_individual_mission_vote')
+def handle_submit_individual_mission_vote(data):
+    global mission_voting_active, current_quest, current_attempt
+    global current_captain, current_team_list, mission_team, voted_members, mission_votes, opened_missions
+    
+    name = data.get('name')
+    vote = data.get('vote')
+    
+    if not mission_voting_active or name not in mission_team or name in voted_members: return
+    
+    # 雙重防護：好人不能出失敗
+    role = players[name].get('role', '')
+    is_good = role in ['梅林', '派西維爾', '亞瑟的忠臣']
+    if is_good and vote == '失敗':
+        vote = '成功'
+        
+    voted_members.append(name)
+    mission_votes.append(vote)
+    
+    emit('update_game_info', get_game_info(), broadcast=True)
+    emit('update_status', get_status(), broadcast=True)
+    
+    if len(voted_members) == len(mission_team):
+        mission_voting_active = False
+        mission_outcomes[current_quest] = list(mission_votes)
+        
+        fails = mission_votes.count('失敗')
+        if fails == 0:
+            result_msg = "本次任務執行成功！"
+        else:
+            result_msg = f"任務失敗！出現了 {fails} 張失敗票！"
+            
+        emit('mission_result_animation', {'message': result_msg, 'fails': fails}, broadcast=True)
+        
+        current_quest += 1
+        current_attempt = 1
+        current_captain = "尚未設定"
+        current_team_list = []
+        mission_team = []
+        voted_members = []
+        mission_votes = []
+        opened_missions = []
+        
+        emit('update_status', get_status(), broadcast=True)
+        emit('update_game_info', get_game_info(), broadcast=True)
+        emit('update_history', {'history': history_records, 'outcomes': mission_outcomes}, broadcast=True)
 
 @socketio.on('reset_history')
 def handle_reset_history():
-    global current_quest, current_attempt, history_records, current_captain, current_team_list, mission_outcomes, game_started
-    history_records, mission_outcomes = [], {}
+    global current_quest, current_attempt, current_captain, current_team_list, game_started
+    global mission_voting_active, mission_team, voted_members, mission_votes, opened_missions
+    
+    history_records.clear()
+    mission_outcomes.clear()
+    
     current_quest, current_attempt = 1, 1
     current_captain, current_team_list = "尚未設定", []
+    mission_voting_active = False
+    mission_team, voted_members, mission_votes, opened_missions = [], [], [], []
     game_started = False
     for n in players: 
         players[n]['vote'] = '反對'
@@ -210,5 +291,30 @@ def handle_assassination(target_name):
     roles = {name: data['role'] for name, data in players.items()}
     emit('reveal_all_roles', roles, broadcast=True)
 
+@socketio.on('reorder_players')
+def handle_reorder_players(data):
+    global players
+    dragged = data.get('dragged')
+    target = data.get('target')
+
+    if dragged in players and target in players:
+        names = list(players.keys())
+        dragged_idx = names.index(dragged)
+        target_idx = names.index(target)
+        
+        names.remove(dragged)
+        new_target_idx = names.index(target)
+        
+        if dragged_idx > target_idx:
+            names.insert(new_target_idx, dragged)
+        else:
+            names.insert(new_target_idx + 1, dragged)
+            
+        new_players = {n: players[n] for n in names}
+        players.clear()
+        players.update(new_players)
+        
+        emit('update_status', get_status(), broadcast=True)
+
 if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000)    
+    socketio.run(app, host='0.0.0.0', port=5000)
