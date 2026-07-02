@@ -227,9 +227,11 @@ def handle_submit_individual_mission_vote(data):
     
     if len(voted_members) == len(mission_team):
         mission_voting_active = False
-        mission_outcomes[current_quest] = list(mission_votes)
-        
+        # 將任務結果重新排序後再寫入歷史紀錄，避免依照投票順序顯示而暴露誰投失敗票。
+        # 顯示規則：失敗票一律在最前面，成功票排在後面。
         fails = mission_votes.count('失敗')
+        mission_outcomes[current_quest] = ['失敗'] * fails + ['成功'] * (len(mission_votes) - fails)
+        
         if fails == 0:
             result_msg = "本次任務執行成功！"
         else:
