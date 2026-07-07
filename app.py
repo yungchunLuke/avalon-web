@@ -23,6 +23,12 @@ voted_members = []
 mission_votes = []
 opened_missions = [] # 記錄已經點開任務卡的玩家
 
+# 湖中女神專用變數
+lady_of_lake = None
+lady_history = []
+lady_used_this_quest = False
+lady_setup_done = False
+
 # 阿瓦隆配置表 (總人數: (好人總數, 壞人總數))
 GAME_CONFIG = {
     5: (3, 2), 6: (4, 2), 7: (4, 3), 8: (5, 3), 9: (6, 3), 10: (6, 4)
@@ -43,7 +49,11 @@ def get_game_info():
         'mission_voting_active': mission_voting_active,
         'mission_team': mission_team,
         'voted_members': voted_members,
-        'opened_missions': opened_missions
+        'opened_missions': opened_missions,
+        'lady_of_lake': lady_of_lake,
+        'lady_history': lady_history,
+        'lady_used_this_quest': lady_used_this_quest,
+        'lady_setup_done': lady_setup_done
     }
 
 @app.route('/')
@@ -70,7 +80,6 @@ def handle_remove_player(name):
         del players[name]
         if current_captain == name: current_captain = "尚未設定"
         if name in current_team_list: current_team_list.remove(name)
-        # 清除歷史中該玩家的投票紀錄避免前端報錯
         for record in history_records:
             if name in record.get('votes', {}): del record['votes'][name]
         emit('update_status', get_status(), broadcast=True)
@@ -80,8 +89,13 @@ def handle_remove_player(name):
 @socketio.on('toggle_game_state')
 def handle_toggle_game_state():
     global game_started, mission_voting_active
+    global lady_of_lake, lady_history, lady_used_this_quest, lady_setup_done
     game_started = False
     mission_voting_active = False
+    lady_of_lake = None
+    lady_history = []
+    lady_used_this_quest = False
+    lady_setup_done = False
     for n in players:
         players[n]['role'] = None
         players[n]['viewed'] = False
@@ -91,6 +105,7 @@ def handle_toggle_game_state():
 @socketio.on('start_game_with_roles')
 def handle_start_game(selected_roles):
     global game_started
+    global lady_of_lake, lady_history, lady_used_this_quest, lady_setup_done
     player_names = list(players.keys())
     random.shuffle(player_names)
     
@@ -99,6 +114,10 @@ def handle_start_game(selected_roles):
         players[name]['viewed'] = False
         
     game_started = True
+    lady_of_lake = None
+    lady_history = []
+    lady_used_this_quest = False
+    lady_setup_done = False
     emit('update_game_info', get_game_info(), broadcast=True)
     emit('update_status', get_status(), broadcast=True)
 
@@ -127,6 +146,39 @@ def handle_view_role(name):
         info = "你沒有任何額外資訊。"
 
     emit('role_info_result', {'name': name, 'role': role, 'info': info})
+    emit('update_status', get_status(), broadcast=True)
+
+@socketio.on('set_initial_lady')
+def handle_set_initial_lady(name):
+    global lady_of_lake, lady_setup_done
+    if not lady_setup_done:
+        lady_setup_done = True
+        lady_of_lake = name
+        emit('update_game_info', get_game_info(), broadcast=True)
+        emit('update_status', get_status(), broadcast=True)
+
+@socketio.on('use_lady_check')
+def handle_use_lady_check(data):
+    global lady_of_lake, lady_history, lady_used_this_quest
+    checker = data.get('checker')
+    target = data.get('target')
+    
+    if checker != lady_of_lake or lady_used_this_quest or current_quest < 3:
+        return
+        
+    if target not in players:
+        return
+        
+    role = players[target]['role']
+    is_good = role in ['梅林', '派西維爾', '亞瑟的忠臣']
+    alignment = "好人" if is_good else "壞人"
+    
+    lady_history.append(checker)
+    lady_of_lake = target
+    lady_used_this_quest = True
+    
+    emit('lady_check_result', {'target': target, 'alignment': alignment})
+    emit('update_game_info', get_game_info(), broadcast=True)
     emit('update_status', get_status(), broadcast=True)
 
 @socketio.on('toggle_vote')
@@ -168,14 +220,12 @@ def handle_submit_round():
     history_records.append(record)
     
     if is_approved:
-        # 提案通過，進入出任務鎖定階段
         mission_voting_active = True
         mission_team = list(current_team_list)
         voted_members = []
         mission_votes = []
         opened_missions = []
     else:
-        # 提案失敗，重置隊長與隊員，推進次數
         current_attempt += 1
         current_captain = "尚未設定"
         current_team_list = []
@@ -188,14 +238,11 @@ def handle_submit_round():
 
 @socketio.on('request_mission_modal')
 def handle_request_mission_modal(name):
-    # 防堵重複點擊與多設備同時點擊
     if not mission_voting_active or name not in mission_team or name in voted_members or name in opened_missions: 
         return
     
-    # 紀錄已被點開
     opened_missions.append(name)
     
-    # 廣播更新，將該玩家按鈕鎖定為「👀 投票中...」
     emit('update_game_info', get_game_info(), broadcast=True)
     emit('update_status', get_status(), broadcast=True)
     
@@ -207,13 +254,13 @@ def handle_request_mission_modal(name):
 def handle_submit_individual_mission_vote(data):
     global mission_voting_active, current_quest, current_attempt
     global current_captain, current_team_list, mission_team, voted_members, mission_votes, opened_missions
+    global lady_used_this_quest
     
     name = data.get('name')
     vote = data.get('vote')
     
     if not mission_voting_active or name not in mission_team or name in voted_members: return
     
-    # 雙重防護：好人不能出失敗
     role = players[name].get('role', '')
     is_good = role in ['梅林', '派西維爾', '亞瑟的忠臣']
     if is_good and vote == '失敗':
@@ -227,8 +274,6 @@ def handle_submit_individual_mission_vote(data):
     
     if len(voted_members) == len(mission_team):
         mission_voting_active = False
-        # 將任務結果重新排序後再寫入歷史紀錄，避免依照投票順序顯示而暴露誰投失敗票。
-        # 顯示規則：失敗票一律在最前面，成功票排在後面。
         fails = mission_votes.count('失敗')
         mission_outcomes[current_quest] = ['失敗'] * fails + ['成功'] * (len(mission_votes) - fails)
         
@@ -247,6 +292,7 @@ def handle_submit_individual_mission_vote(data):
         voted_members = []
         mission_votes = []
         opened_missions = []
+        lady_used_this_quest = False
         
         emit('update_status', get_status(), broadcast=True)
         emit('update_game_info', get_game_info(), broadcast=True)
@@ -256,6 +302,7 @@ def handle_submit_individual_mission_vote(data):
 def handle_reset_history():
     global current_quest, current_attempt, current_captain, current_team_list, game_started
     global mission_voting_active, mission_team, voted_members, mission_votes, opened_missions
+    global lady_of_lake, lady_history, lady_used_this_quest, lady_setup_done
     
     history_records.clear()
     mission_outcomes.clear()
@@ -265,6 +312,10 @@ def handle_reset_history():
     mission_voting_active = False
     mission_team, voted_members, mission_votes, opened_missions = [], [], [], []
     game_started = False
+    lady_of_lake = None
+    lady_history = []
+    lady_used_this_quest = False
+    lady_setup_done = False
     for n in players: 
         players[n]['vote'] = '反對'
         players[n]['role'] = None
