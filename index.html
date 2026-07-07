@@ -3,12 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>阿瓦隆進階主持板</title>
+    <title>阿瓦隆向外累積主持板</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         body { font-family: "微軟正黑體", sans-serif; text-align: center; padding: 20px; background-color: #f4f4f9; color: #333; margin-bottom: 100px;}
         button { padding: 10px 15px; margin: 4px; font-size: 14px; cursor: pointer; border: none; border-radius: 5px; font-weight: bold; transition: 0.2s; }
-        .info-panel { background-color: #fff3cd; padding: 15px; border-radius: 8px; border: 1px solid #ffeeba; display: inline-block; margin-bottom: 20px; min-width: 300px; }
         
         /* 玩家狀態按鈕 */
         .btn-cap { background-color: #e2e3e5; color: #666; }
@@ -70,16 +69,11 @@
 
     <h1>🏰 阿瓦隆向外累積紀錄板</h1>
 
-    <div class="info-panel">
-        任務 <span id="quest-num">1</span> (第 <span id="attempt-num">1</span> 次派票) | 人數：<span id="player-count">0</span><br>
-        👑 隊長：<span id="display-captain" style="color:#856404; font-weight:bold;">尚未設定</span><br>
-        🛡️ 隊員：<span id="display-team" style="color:#6f42c1; font-weight:bold;">尚未設定</span>
-    </div>
-
     <div id="add-player-section" style="margin-bottom: 20px;">
         <input type="text" id="newPlayerName" placeholder="玩家名稱" style="padding:12px; border:1px solid #ccc; border-radius:5px; width:150px;">
         <button id="addPlayerBtn" onclick="addPlayer()" class="primary">➕ 新增</button>
         <button id="toggleGameBtn" onclick="openRoleModal()" class="success" style="margin-left: 15px;">🚀 遊戲開始</button>
+        <button id="setupLadyBtn" onclick="openInitialLadyModal()" class="primary" style="margin-left: 15px; display: none;">設定首位湖中女神</button>
     </div>
 
     <div id="player-list"></div>
@@ -153,6 +147,37 @@
         </div>
     </div>
 
+    <div id="initial-lady-modal" class="overlay" style="z-index: 1500;">
+        <div class="modal-box">
+            <h2>選擇首位湖中女神</h2>
+            <p>請點擊選取一位玩家擔任首位湖中女神：</p>
+            <div id="initial-lady-options" style="display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 20px;"></div>
+            <br>
+            <button class="primary" onclick="confirmInitialLady()" style="margin-top: 20px; padding: 10px 30px; font-size: 16px;">確認</button>
+            <button class="secondary" onclick="closeInitialLadyModal()" style="margin-top: 20px; padding: 10px 30px; font-size: 16px;">取消</button>
+        </div>
+    </div>
+
+    <div id="lady-modal" class="overlay" style="z-index: 1500;">
+        <div class="modal-box">
+            <h2>湖中女神驗人</h2>
+            <p>請選擇你要查驗陣營的玩家：</p>
+            <div id="lady-target-options" style="display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 20px;"></div>
+            <br>
+            <button class="primary" id="confirm-lady-btn" style="margin-top: 20px; padding: 10px 30px; font-size: 16px;">確認</button>
+            <button class="secondary" onclick="closeLadyModal()" style="margin-top: 20px; padding: 10px 30px; font-size: 16px;">取消</button>
+        </div>
+    </div>
+
+    <div id="lady-result-modal" class="overlay" style="z-index: 1600;">
+        <div class="modal-box">
+            <h2>驗人結果</h2>
+            <p style="font-size: 20px;">玩家 <b id="lady-result-target"></b> 的陣營是：</p>
+            <h1 id="lady-result-alignment" style="font-size: 40px; margin: 20px 0; color: #333;"></h1>
+            <button class="primary" onclick="closeLadyResultModal()" style="font-size: 18px; padding: 10px 40px;">我已確認</button>
+        </div>
+    </div>
+
     <div id="history-container"></div>
 
     <div style="margin: 40px auto; max-width: 600px; display: flex; gap: 20px; justify-content: center;">
@@ -164,12 +189,16 @@
 
     <script>
         const socket = io();
-        let currentInfo = { captain: "", team: [], game_started: false, config: [0, 0], mission_voting_active: false, mission_team: [], voted_members: [], opened_missions: [] };
+        let currentInfo = { captain: "", team: [], game_started: false, config: [0, 0], mission_voting_active: false, mission_team: [], voted_members: [], opened_missions: [], lady_of_lake: null, lady_history: [], lady_used_this_quest: false, lady_setup_done: false };
         let selectedRoles = ['梅林', '刺客'];
         let currentPlayers = [];
         let lastPlayersData = []; 
         let revealedRoles = {}; 
         let selectedAssassinationTarget = null; 
+        
+        // 湖中女神選取變數
+        let selectedInitialLady = null; 
+        let selectedLadyTarget = null;
 
         // 任務階段專用變數
         let currentMissionPlayer = "";
@@ -232,9 +261,6 @@
             document.querySelectorAll('.btn-delete').forEach(btn => {
                 btn.style.display = currentInfo.game_started ? 'none' : 'inline-block';
             });
-            document.querySelectorAll('.btn-view').forEach(btn => {
-                btn.style.display = currentInfo.game_started ? 'inline-block' : 'none';
-            });
         }
 
         function renderPlayerList() {
@@ -253,6 +279,34 @@
                     roleHtml = `<span style="font-weight:bold; color: ${color}; margin-left: 10px; font-size: 16px;">[${r}]</span>`;
                 }
                 
+                // 動態決定「查看角色 / 湖中女神」的按鈕渲染
+                let viewBtnHtml = "";
+                if (currentInfo.game_started) {
+                    if (!currentInfo.lady_setup_done) {
+                        viewBtnHtml = `<button class="btn-view ${p.viewed ? 'btn-disabled' : ''}" 
+                                        onclick="viewRole('${p.name}')" 
+                                        ${p.viewed ? 'disabled' : ''}>👁️ 查看角色</button>`;
+                    } else {
+                        if (currentInfo.lady_of_lake === p.name) {
+                            // 現任湖中女神
+                            let canClick = (currentInfo.quest >= 3) && !currentInfo.lady_used_this_quest;
+                            let btnClass = canClick ? "btn-view" : "btn-disabled";
+                            let opacity = canClick ? "1" : "0.5";
+                            let cursor = canClick ? "pointer" : "not-allowed";
+                            let boxShadow = canClick ? "0 0 10px #17a2b8" : "none";
+                            viewBtnHtml = `<button class="${btnClass}" onclick="openLadyModal('${p.name}')" ${canClick ? "" : "disabled"} style="opacity: ${opacity}; cursor: ${cursor}; box-shadow: ${boxShadow};">湖中女神</button>`;
+                        } else if (currentInfo.lady_history.includes(p.name)) {
+                            // 歷史曾當過女神
+                            viewBtnHtml = `<button class="btn-disabled" disabled style="opacity: 0.3; cursor: not-allowed;">湖中女神</button>`;
+                        } else {
+                            // 其他人（顯示透明隱形按鈕防跑版）
+                            viewBtnHtml = `<button style="visibility: hidden; padding: 10px 15px; margin: 4px;">湖中女神</button>`;
+                        }
+                    }
+                } else {
+                    viewBtnHtml = `<button class="btn-view" style="display: none;">👁️ 查看角色</button>`;
+                }
+
                 let controlsHtml = "";
 
                 if (currentInfo.mission_voting_active) {
@@ -270,20 +324,14 @@
                     }
                     
                     controlsHtml = `
-                        <button class="btn-view ${p.viewed ? 'btn-disabled' : ''}" 
-                                onclick="viewRole('${p.name}')" 
-                                ${p.viewed ? 'disabled' : ''} 
-                                style="display: ${currentInfo.game_started ? 'inline-block' : 'none'};">👁️ 查看角色</button>
+                        ${viewBtnHtml}
                         <button class="btn-cap btn-disabled" disabled>👑 隊長</button>
                         ${btnMissionHtml}
                         <button class="btn-vote btn-disabled" disabled>${isApprove ? '⭕ 贊成' : '❌ 反對'}</button>
                     `;
                 } else {
                     controlsHtml = `
-                        <button class="btn-view ${p.viewed ? 'btn-disabled' : ''}" 
-                                onclick="viewRole('${p.name}')" 
-                                ${p.viewed ? 'disabled' : ''} 
-                                style="display: ${currentInfo.game_started ? 'inline-block' : 'none'};">👁️ 查看角色</button>
+                        ${viewBtnHtml}
                         <button class="btn-cap ${currentInfo.captain === p.name ? 'active' : ''}" 
                                 data-name="${p.name}"
                                 onclick="socket.emit('toggle_captain', '${p.name}')">👑 隊長</button>
@@ -301,7 +349,6 @@
                     <div class="player-name">${p.name}</div>
                     <div>${controlsHtml}</div>`;
                 
-                // 綁定拖曳事件
                 item.setAttribute('draggable', 'true');
                 item.setAttribute('data-name', p.name);
                 item.addEventListener('dragstart', dragStart);
@@ -323,7 +370,8 @@
                 }
                 return;
             }
-            const count = parseInt(document.getElementById('player-count').innerText);
+            // --- 註: 由於把頂部資訊區塊拿掉了，現在的人數必須直接算 players ---
+            const count = Object.keys(currentInfo.config).length > 0 ? currentPlayers.length : 0; 
             if (count < 5) return alert("人數不足 5 人無法開始！");
             if (!currentInfo.config || currentInfo.config[0] === 0) return alert("遊戲配置數據同步中，請稍候再試或重新整理網頁！");
 
@@ -421,7 +469,7 @@
         }
 
         function confirmRoles() {
-            const count = parseInt(document.getElementById('player-count').innerText);
+            const count = currentPlayers.length;
             const servantSelected = Array.from(document.querySelectorAll('#servant-area .selected')).map(() => "亞瑟的忠臣");
             const minionSelected = Array.from(document.querySelectorAll('#minion-area .selected')).map(() => "莫德雷德的爪牙");
             const finalRoles = [...selectedRoles, ...servantSelected, ...minionSelected];
@@ -444,13 +492,9 @@
 
         socket.on('update_game_info', (info) => {
             currentInfo = info;
-            document.getElementById('quest-num').innerText = info.quest;
-            document.getElementById('attempt-num').innerText = info.attempt;
-            document.getElementById('player-count').innerText = info.player_count;
-            document.getElementById('display-captain').innerText = info.captain;
-            document.getElementById('display-team').innerText = info.team.join(", ") || "尚未設定";
-
+            
             const toggleBtn = document.getElementById('toggleGameBtn');
+            const setupLadyBtn = document.getElementById('setupLadyBtn');
             const input = document.getElementById('newPlayerName');
             const addBtn = document.getElementById('addPlayerBtn');
 
@@ -458,11 +502,18 @@
                 input.disabled = true; input.style.backgroundColor = '#e9ecef';
                 addBtn.disabled = true; addBtn.className = 'btn-disabled';
                 toggleBtn.innerText = "🔄 重新設定角色"; toggleBtn.style.backgroundColor = "#ffc107"; toggleBtn.style.color = "#212529";
+                
+                if (!info.lady_setup_done) {
+                    setupLadyBtn.style.display = 'inline-block';
+                } else {
+                    setupLadyBtn.style.display = 'none';
+                }
             } else {
                 revealedRoles = {}; 
                 input.disabled = false; input.style.backgroundColor = 'white';
                 addBtn.disabled = false; addBtn.className = 'primary';
                 toggleBtn.innerText = "🚀 遊戲開始"; toggleBtn.style.backgroundColor = "#28a745"; toggleBtn.style.color = "white";
+                setupLadyBtn.style.display = 'none';
             }
             renderPlayerList();
         });
@@ -618,6 +669,106 @@
         }
         function closeAssassinationModal() { document.getElementById('assassination-modal').style.display = 'none'; }
         socket.on('assassination_result', (data) => { alert((data.is_evil_win ? "💀 " : "🎉 ") + data.message); });
+
+        // --- 湖中女神邏輯處理 ---
+        function openInitialLadyModal() {
+            const area = document.getElementById('initial-lady-options');
+            area.innerHTML = "";
+            selectedInitialLady = null;
+            
+            currentPlayers.forEach(name => {
+                const btn = document.createElement('button');
+                btn.className = "role-btn"; 
+                btn.style.padding = "10px 20px";
+                btn.style.fontSize = "16px";
+                btn.style.width = "auto";
+                btn.style.minWidth = "100px";
+                btn.innerText = name;
+                
+                btn.onclick = () => {
+                    document.querySelectorAll('#initial-lady-options .role-btn').forEach(b => b.classList.remove('selected'));
+                    btn.classList.add('selected');
+                    selectedInitialLady = name;
+                };
+                area.appendChild(btn);
+            });
+            document.getElementById('initial-lady-modal').style.display = 'flex';
+        }
+
+        function confirmInitialLady() {
+            if (!selectedInitialLady) {
+                return alert("請先選取一位玩家！");
+            }
+            socket.emit('set_initial_lady', selectedInitialLady);
+            closeInitialLadyModal();
+        }
+
+        function closeInitialLadyModal() {
+            document.getElementById('initial-lady-modal').style.display = 'none';
+        }
+
+        function openLadyModal(checker) {
+            if (currentInfo.quest < 3) return alert("第二次任務結束後（第三回合開始）才可以使用湖中女神！");
+            if (currentInfo.lady_used_this_quest) return alert("本回合已經使用過湖中女神！出完下次任務後才能再次驗人。");
+            
+            const area = document.getElementById('lady-target-options');
+            area.innerHTML = "";
+            selectedLadyTarget = null; 
+            
+            document.getElementById('confirm-lady-btn').onclick = () => confirmLadyAction(checker);
+
+            let hasValidTarget = false;
+            currentPlayers.forEach(p => {
+                if (p !== checker && !currentInfo.lady_history.includes(p) && currentInfo.lady_of_lake !== p) {
+                    hasValidTarget = true;
+                    const btn = document.createElement('button');
+                    btn.className = "role-btn"; 
+                    btn.style.padding = "10px 20px";
+                    btn.style.fontSize = "16px";
+                    btn.style.width = "auto";
+                    btn.style.minWidth = "100px";
+                    btn.innerText = p;
+                    
+                    btn.onclick = () => {
+                        document.querySelectorAll('#lady-target-options .role-btn').forEach(b => b.classList.remove('selected'));
+                        btn.classList.add('selected');
+                        selectedLadyTarget = p;
+                    };
+                    area.appendChild(btn);
+                }
+            });
+
+            if (!hasValidTarget) {
+                area.innerHTML = "<p style='color:#666;'>沒有可供查驗的對象了！</p>";
+                document.getElementById('confirm-lady-btn').style.display = 'none';
+            } else {
+                document.getElementById('confirm-lady-btn').style.display = 'inline-block';
+            }
+
+            document.getElementById('lady-modal').style.display = 'flex';
+        }
+
+        function confirmLadyAction(checker) {
+            if (!selectedLadyTarget) {
+                return alert("請先選取一位玩家！");
+            }
+            socket.emit('use_lady_check', { checker: checker, target: selectedLadyTarget });
+            closeLadyModal();
+        }
+
+        function closeLadyModal() {
+            document.getElementById('lady-modal').style.display = 'none';
+        }
+
+        socket.on('lady_check_result', (data) => {
+            document.getElementById('lady-result-target').innerText = data.target;
+            document.getElementById('lady-result-alignment').innerText = data.alignment;
+            document.getElementById('lady-result-modal').style.display = 'flex';
+        });
+
+        function closeLadyResultModal() {
+            document.getElementById('lady-result-modal').style.display = 'none';
+        }
 
         socket.on('update_history', (data) => {
             const container = document.getElementById('history-container');
